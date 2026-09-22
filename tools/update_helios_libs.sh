@@ -8,10 +8,9 @@
 # Review and commit the updated binaries afterwards:
 #   git add src/stepss/libs/ && git commit -m "Bundle helios <tag> libraries"
 #
-# Note for macOS users downloading libraries manually through a browser
-# instead of this script: strip the quarantine attribute before use
-# (xattr -d com.apple.quarantine libhelios_api.dylib). Files installed by
-# pip from the wheel do not carry the attribute.
+# The macOS library is signed by Cyprus University of Technology and notarized
+# by Apple, so no quarantine workaround is needed. Files installed by pip from
+# the wheel do not carry the attribute.
 
 set -euo pipefail
 
