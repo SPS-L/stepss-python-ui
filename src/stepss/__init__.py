@@ -25,7 +25,7 @@ Module-level flags set at import time:
 """
 
 __package_name__ = "stepss"
-__version__ = '3.82'
+__version__ = '3.82.1'
 __author__ = "Petros Aristidou"
 __copyright__ = "Petros Aristidou"
 __license__ = "Apache-2.0"

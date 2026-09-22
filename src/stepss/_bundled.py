@@ -10,4 +10,4 @@ leading components of __version__ always name the library bundled here.
 """
 
 RAMSES_VERSION = "v3.82"
-HELIOS_VERSION = "v1.4.1"
+HELIOS_VERSION = "v1.5.0"
