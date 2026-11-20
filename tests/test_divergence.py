@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+import stepss
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CASE_DIR = REPO_ROOT / "tests" / "data" / "nordic"
 
@@ -204,12 +206,32 @@ def faked(tmp_path, engine):
     case.addData(str(tmp_path / "d.dat"))
     case.addDst(str(tmp_path / "c.dst"))
     case.addOut(str(tmp_path / "output.trace"))
-    ram = stepss.sim()
-    # sim.__del__ unloads the library through this handle, so the fake
-    # carries the real one and the real library is still released once.
-    engine._handle = ram._ramseslib._handle
-    ram._ramseslib = engine
-    return ram, case
+    return FakeSim(engine), case
+
+
+class FakeSim(stepss.sim):
+    """A sim that never loads the real library.
+
+    It used to be a real stepss.sim() with its library swapped out, which
+    held a reference to the RAMSES DLL for as long as the object lived. A
+    test that raises keeps the object alive through the exception's
+    traceback until the garbage collector gets to it, and on Windows the
+    DLL is only unloaded, and its Fortran state reset, when the last
+    reference goes. test_ssa_engine.py relies on that reset between
+    fixtures, and on windows-latest with Python 3.12 it once found the
+    previous test's simulation still at t = 0.5 s, the other five legs
+    passing. A late collection of such an object is the likely cause,
+    which is also why it is intermittent; a fake that never loads the
+    library cannot cause it either way.
+    """
+
+    def __init__(self, engine):  # deliberately not calling sim.__init__
+        self._ramseslib = engine
+        self._stopTime = None
+        self._traceFile = None
+
+    def __del__(self):  # nothing loaded, nothing to unload
+        pass
 
 
 def test_an_unflagged_early_end_raises_with_the_engine_line(tmp_path):
