@@ -1,11 +1,17 @@
 """A run that stops short of its STOP time must not pass as a finished one.
 
-RAMSES ends a run on "Divergence. Simulation stopped" (Newton failed at the
-minimum time step) by setting its end-of-simulation flag and nothing else, so
-``ramses()`` returns 0, the same flag as a run that reached STOP. ``execSim()``
-used to read that 0 as success: a reduced GB network diverged at t = 0.35 s
-and its notebook reported it as running for three months, because the
-trajectory simply ended there.
+Up to RAMSES 3.84 the engine ended a run on "Divergence. Simulation stopped"
+(Newton failed at the minimum time step) by setting its end-of-simulation flag
+and nothing else, so ``ramses()`` returned 0, the same flag as a run that
+reached STOP. ``execSim()`` read that 0 as success: a reduced GB network
+diverged at t = 0.35 s and its notebook reported it as running for three
+months, because the trajectory simply ended there.
+
+Later engines return -1 with the message in ``getLastErr()``, which the
+non-zero-flag path already raises on. Older engines, and any other early end
+the engine does not flag, are caught by comparing the simulated time with the
+STOP time. The engine tests below accept either route; the fake-engine tests
+pin the STOP-time check on its own, whatever library is bundled.
 
 The diverging case below is the Nordic test system with a Newton tolerance no
 iteration can meet, so the very first time step fails at the minimum step size.
@@ -105,7 +111,9 @@ def test_a_diverging_run_raises(tmp_path):
     assert outcome["sim_time"] < STOP  # the engine really did stop short
     assert outcome["raised"] is not None, outcome
     assert "Divergence" in outcome["raised"]  # the engine's own words
-    assert "3.0000" in outcome["raised"]      # and the STOP it fell short of
+    # Either the engine flagged it (-1) or the STOP-time check caught it.
+    assert ("flag -1" in outcome["raised"]
+            or "before the STOP time 3.0000 s" in outcome["raised"])
 
 
 def test_a_run_that_reaches_stop_does_not_raise(tmp_path):
@@ -154,3 +162,98 @@ def test_no_usable_stop_gives_none(tmp_path):
     assert stop_time(write(tmp_path, "  1.0 FAULT BUS 4032 0. 0.8\n")) is None
     assert stop_time(write(tmp_path, "abc STOP\n")) is None
     assert stop_time(str(tmp_path / "absent.dst")) is None
+
+
+# -- the STOP-time check, against a fake engine ---------------------------
+
+class FakeEngine:
+    """Stands in for the loaded library: returns *flag*, stops at *t_end*."""
+
+    def __init__(self, flag, t_end, trace_text=""):
+        self.flag, self.t_end, self.trace_text = flag, t_end, trace_text
+        self.trace = None
+
+    def set_pause_time(self, t):
+        return 0
+
+    def ramses(self, cmd, out):
+        self.trace = out.decode("utf-8")
+        with open(self.trace, "a") as trace:
+            trace.write(self.trace_text)
+        return self.flag
+
+    def continue_simul(self):
+        return self.flag
+
+    def set_end_simul(self):
+        return 0
+
+    def get_sim_time(self):
+        return self.t_end
+
+    def get_huge_double(self):
+        return 1e308
+
+
+def faked(tmp_path, engine):
+    import stepss
+
+    (tmp_path / "d.dat").write_text("# data\n")
+    (tmp_path / "c.dst").write_text(FAULT_CLEARED)
+    case = stepss.cfg()
+    case.addData(str(tmp_path / "d.dat"))
+    case.addDst(str(tmp_path / "c.dst"))
+    case.addOut(str(tmp_path / "output.trace"))
+    ram = stepss.sim()
+    # sim.__del__ unloads the library through this handle, so the fake
+    # carries the real one and the real library is still released once.
+    engine._handle = ram._ramseslib._handle
+    ram._ramseslib = engine
+    return ram, case
+
+
+def test_an_unflagged_early_end_raises_with_the_engine_line(tmp_path):
+    from stepss.globals import RAMSESError
+
+    engine = FakeEngine(0, 0.35, "t =    0.3500   Divergence. Simulation stopped\n")
+    ram, case = faked(tmp_path, engine)
+    with pytest.raises(RAMSESError) as err:
+        ram.execSim(case)
+    assert "t = 0.3500 s, before the STOP time 3.0000 s" in str(err.value)
+    assert "t = 0.3500 Divergence. Simulation stopped" in str(err.value)
+
+
+def test_only_this_calls_part_of_the_trace_is_quoted(tmp_path):
+    from stepss.globals import RAMSESError
+
+    (tmp_path / "output.trace").write_text("t =    9.9999   an earlier run's line\n")
+    ram, case = faked(tmp_path, FakeEngine(0, 0.35))
+    with pytest.raises(RAMSESError) as err:
+        ram.execSim(case)
+    assert "earlier run" not in str(err.value)
+
+
+def test_reaching_stop_passes(tmp_path):
+    ram, case = faked(tmp_path, FakeEngine(0, 3.0))
+    assert ram.execSim(case) == 0
+
+
+def test_a_latency_early_stop_passes(tmp_path):
+    engine = FakeEngine(0, 1.2, "All equipment is latent. So, the simulation stops.\n")
+    ram, case = faked(tmp_path, engine)
+    assert ram.execSim(case) == 0
+
+
+def test_a_pause_is_not_checked(tmp_path):
+    ram, case = faked(tmp_path, FakeEngine(112, 1.0))
+    assert ram.execSim(case, pause=1.0) == 0
+
+
+def test_a_stop_added_at_run_time_moves_the_check(tmp_path):
+    engine = FakeEngine(112, 1.0)
+    ram, case = faked(tmp_path, engine)
+    ram.execSim(case, pause=1.0)
+    engine.add_disturb = lambda t, d: 0
+    ram.addDisturb(2.0, "STOP")
+    engine.flag, engine.t_end = 0, 2.0
+    assert ram.contSim(ram.getInfTime()) == 0
