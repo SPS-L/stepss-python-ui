@@ -57,6 +57,33 @@ def _dstProblem(dstfile):
             'ends at its STOP time, so add a line such as "240.0 STOP".' % dstfile)
 
 
+def _dstStopTime(dstfile):
+    """Return the time of the first STOP record in *dstfile*, or None.
+
+    Reads the file the way :func:`_dstProblem` does. None means there is no
+    STOP time to compare against (unreadable file, no STOP, or a STOP whose
+    time is not a number), which callers take as "do not check".
+
+    :param str dstfile: path to the disturbance file.
+    :rtype: float or None
+    """
+    try:
+        with open(dstfile, 'r', encoding='utf-8', errors='replace') as records_file:
+            for line in records_file:
+                text = line.strip()
+                if not text or text[0] in '#!':
+                    continue
+                time, space, description = text.partition(' ')
+                if space and 'STOP' in description:
+                    try:
+                        return float(time)
+                    except ValueError:
+                        return None
+    except IOError:
+        pass
+    return None
+
+
 class cfg(object):
     """Simulation case configuration.
 

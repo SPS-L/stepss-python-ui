@@ -128,6 +128,15 @@ against `tests/baselines/nordic_baseline.npz` via `tools/compare_trj.py`.
   `-1` and a message naming `sim_minmaxvolt`; a run that completes cleanly is
   the regression. `RAMSESError` is not exported at package level: import it
   from `stepss.globals`.
+- **A 0 flag does not mean the run reached STOP.** The engine ends a run on
+  `Divergence. Simulation stopped` by setting its end flag alone, so
+  `ramses()` returns 0 exactly as for a finished run. `execSim()` and
+  `contSim()` therefore compare `getSimTime()` with the STOP time of the
+  `.dst` and raise `RAMSESError`, quoting the engine's last `t = ...` line
+  from the trace file, when the run fell short. `endSim()` skips the check
+  (ending early is its job), and so does `$LATENCY` early stopping, which the
+  engine logs as `All equipment is latent`. `tests/test_divergence.py` drives
+  the engine's divergence branch with an unreachable `$NEWTON_TOLER`.
 - **Do not call `endSim()` after the trip.** It raises a second, unrelated
   `RAMSESError` ("Load records") that masks the real result. `obs.trj` is
   already complete without it.
