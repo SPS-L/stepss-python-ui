@@ -18,7 +18,7 @@ import datetime
 import numpy as np
 from scipy.sparse import coo_matrix
 
-from .cases import cfg
+from .cases import cfg, _dstStopTime
 from .globals import RAMSESError, CustomWarning, __libdir__, __platlibdir__, wrapToList
 
 class sim(object):
@@ -99,6 +99,11 @@ class sim(object):
         # stale result hand back the newer matrix. A stepss.ssa.Results
         # compares against this to refuse that instead.
         self._ssaGeneration = 0
+        # What a run must reach to count as finished: the STOP time of the
+        # case's disturbance file, and the trace file the engine logs to (its
+        # log unit is opened in append mode on that file). See _checkReachedStop.
+        self._stopTime = None
+        self._traceFile = None
         self._setcalls()
 
     def __del__(self):
@@ -537,7 +542,11 @@ class sim(object):
         :returns: ``0`` on success.
         :rtype: int
         :raises TypeError: if *cmd* is not a :class:`stepss.cfg` instance.
-        :raises RAMSESError: if the solver returns a non-zero, non-112 flag.
+        :raises RAMSESError: if the solver returns a non-zero, non-112 flag,
+                             or if it returns 0 but the simulation stopped
+                             before the STOP time of the disturbance file
+                             (for example on ``Divergence. Simulation
+                             stopped``, which the engine does not flag).
 
         .. note:: Return code ``112`` means the simulation paused normally; it
                   is treated as success by this method.
@@ -562,10 +571,62 @@ class sim(object):
             outfilename = os.path.join(os.getcwd(),'output '+datetime.datetime.now().strftime("%d.%m.%Y-%H.%M.%S")+'.trace')
         else:
             outfilename = cmd._out[0]
+        self._stopTime = _dstStopTime(cmd._dstset[0])
+        self._traceFile = outfilename
+        traceStart = self._traceSize()
         retval = self._ramseslib.ramses(cmdfilename.encode('utf-8'), outfilename.encode('utf-8'))
         if (retval != 0) and (retval != 112):
             raise RAMSESError('RAMSES: Function execSim() failed with the flag %i. Last message was: %s' % (retval, self.getLastErr()))
+        if retval == 0:
+            self._checkReachedStop('execSim', traceStart)
         return 0
+
+    def _traceSize(self):
+        """Current size of the trace file in bytes, or 0 if it cannot be read."""
+        try:
+            return os.path.getsize(self._traceFile)
+        except (OSError, TypeError):
+            return 0
+
+    def _checkReachedStop(self, caller, traceStart):
+        """Raise :class:`RAMSESError` if a run that returned 0 ended before STOP.
+
+        The engine ends a run on ``Divergence. Simulation stopped`` (Newton
+        failure at the minimum time step), and on a few other numerical
+        failures, by setting its end-of-simulation flag alone: ``ramses()``
+        then returns 0, the same flag as a run that reached STOP. The
+        simulated time is what tells them apart. The engine's own reason is
+        only written to its log, so it is quoted from the part of the trace
+        file this call added.
+
+        The engine also ends a run early on purpose when ``$LATENCY`` early
+        stopping finds every device latent, and says so in the log; that is
+        not a failure and is let through.
+
+        :param str caller: name of the public method, for the message.
+        :param int traceStart: size of the trace file before the call.
+        """
+        if self._stopTime is None:
+            return
+        reached = self.getSimTime()
+        if reached >= self._stopTime - 1e-9 * max(1.0, abs(self._stopTime)):
+            return
+        logged = ''
+        try:
+            with open(self._traceFile, 'r', encoding='utf-8', errors='replace') as trace:
+                trace.seek(traceStart)
+                logged = trace.read()
+        except (OSError, TypeError):
+            pass
+        if 'All equipment is latent' in logged:
+            return
+        reasons = [' '.join(line.split()) for line in logged.splitlines()
+                   if line.strip().startswith('t =')]
+        reason = reasons[-1] if reasons else 'none in %s' % self._traceFile
+        raise RAMSESError('RAMSES: Function %s() returned without an error flag, but the '
+                          'simulation stopped at t = %.4f s, before the STOP time %.4f s. '
+                          'The engine reported: %s'
+                          % (caller, reached, self._stopTime, reason))
 
     def contSim(self, pause=None):
         """Continue a paused simulation until *pause* seconds of simulated time.
@@ -579,7 +640,9 @@ class sim(object):
         :type pause: float or None
         :returns: ``0`` on success.
         :rtype: int
-        :raises RAMSESError: if the RAMSES call returns a non-zero, non-112 flag.
+        :raises RAMSESError: if the RAMSES call returns a non-zero, non-112 flag,
+                             or returns 0 with the simulation stopped before
+                             the STOP time (see :meth:`execSim`).
 
         :Example:
 
@@ -589,11 +652,18 @@ class sim(object):
         >>> ram.execSim(case, 0.0)        # initialise and pause at t=0
         >>> ram.contSim(ram.getInfTime()) # run to end of scenario
         """
+        return self._contSim(pause, checkStop=True)
+
+    def _contSim(self, pause, checkStop):
+        """Body of :meth:`contSim`; :meth:`endSim` passes ``checkStop=False``."""
         if pause is not None:
             self.pauseSim(pause)
+        traceStart = self._traceSize()
         retval = self._ramseslib.continue_simul()
         if (retval != 0) and (retval != 112):
             raise RAMSESError('RAMSES: Function contSim() failed with the flag %i. Last message was: %s' % (retval, self.getLastErr()))
+        if retval == 0 and checkStop:
+            self._checkReachedStop('contSim', traceStart)
         return 0
 
     def getBusVolt(self, busNames):
@@ -731,8 +801,9 @@ class sim(object):
         :rtype: int
         """
 
+        # Ending before STOP is the point here, so the STOP check is skipped.
         self._ramseslib.set_end_simul()
-        return self.contSim(self.getInfTime())
+        return self._contSim(self.getInfTime(), checkStop=False)
     
     def getEndSim(self):
         """Check whether the simulation has ended.
@@ -1158,4 +1229,7 @@ class sim(object):
         >>> ram.addDisturb(100.000, 'CHGPRM DCTL 5-1045  Vsetpt -0.05 0')
         >>> ram.contSim(ram.getInfTime()) # continue the simulation
         """
+        if 'STOP' in disturb and (self._stopTime is None or t_dist < self._stopTime):
+            # A STOP added at run time moves the end the run is checked against.
+            self._stopTime = float(t_dist)
         return self._ramseslib.add_disturb(t_dist, disturb.encode('utf-8'))
