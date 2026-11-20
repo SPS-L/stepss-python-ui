@@ -591,10 +591,11 @@ class sim(object):
     def _checkReachedStop(self, caller, traceStart):
         """Raise :class:`RAMSESError` if a run that returned 0 ended before STOP.
 
-        The engine ends a run on ``Divergence. Simulation stopped`` (Newton
-        failure at the minimum time step), and on a few other numerical
-        failures, by setting its end-of-simulation flag alone: ``ramses()``
-        then returns 0, the same flag as a run that reached STOP. The
+        Up to RAMSES 3.84 the engine ended a run on ``Divergence. Simulation
+        stopped`` (Newton failure at the minimum time step) by setting its
+        end-of-simulation flag alone, so ``ramses()`` returned 0, the same
+        flag as a run that reached STOP. Later engines return -1 for it, but
+        a few other early ends are still unflagged, so this check stays. The
         simulated time is what tells them apart. The engine's own reason is
         only written to its log, so it is quoted from the part of the trace
         file this call added.
