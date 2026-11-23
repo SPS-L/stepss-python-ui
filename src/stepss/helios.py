@@ -55,6 +55,8 @@ class SolverStatus(enum.IntEnum):
     DIVERGED = 2
     MAX_ITERATIONS = 3
     SINGULAR = 4
+    NO_DC_REGULATION = 5      #: a DC grid has no converter regulating its voltage
+    CONVERTER_INFEASIBLE = 6  #: a converter cannot deliver the PDC it must
 
 
 class Option(enum.IntEnum):

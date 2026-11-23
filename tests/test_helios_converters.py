@@ -8,7 +8,7 @@ and no generator), holding its AC voltage with EFF 0.98.
 import pytest
 
 from stepss.globals import HeliosError
-from stepss.helios import BusType, ConverterMode, HeliosSession
+from stepss.helios import BusType, ConverterMode, HeliosSession, SolverStatus
 from conftest import LIB_DIR
 
 
@@ -85,3 +85,12 @@ def test_old_library_raises(two_areas):
         pytest.skip("library has the converter getters")
     with pytest.raises(HeliosError, match="1.7"):
         two_areas.get_converter_info("C1")
+
+
+def test_no_dc_regulation_status(session, data_dir):
+    # C1 is a droop converter capped at PMAX = 20 MW, against about 51 MW that
+    # the island of B needs through C2, so nothing holds the DC voltage
+    session.load_file(data_dir / "acdc_no_dc_regulation.dat")
+    assert not session.solve()
+    assert session.solver_status is SolverStatus.NO_DC_REGULATION
+    assert "BUSDC 'D1'" in session.last_error
