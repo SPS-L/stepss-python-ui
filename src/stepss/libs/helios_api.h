@@ -108,7 +108,11 @@ HELIOS_API int          helios_get_iteration_count(HeliosHandle h);
 /* Largest remaining mismatches of the last solve. NULL pointers skipped. */
 HELIOS_API int          helios_get_max_mismatch(HeliosHandle h, double* mw, double* mvar);
 /* Detailed solver status: 0=NOT_RUN 1=CONVERGED 2=DIVERGED 3=MAX_ITERATIONS
- * 4=SINGULAR, or negative error code. */
+ * 4=SINGULAR 5=NO_DC_REGULATION (a DC grid has no converter holding its
+ * voltage; helios_get_last_error names it) 6=CONVERTER_INFEASIBLE (a
+ * converter cannot deliver the PDC it must, through its losses and station,
+ * or free converter powers form a ring; helios_get_last_error names it), or
+ * negative error code. */
 HELIOS_API int          helios_get_solver_status(HeliosHandle h);
 
 /* ---- Element counts ---- */
@@ -143,7 +147,7 @@ HELIOS_API int          helios_find_cut(HeliosHandle h, const char* name);
 /* ---- Indexed getters ----
  * All output pointers may be NULL to skip that field. */
 
-/* bus_type: 0=PQ 1=PV 2=SLACK 3=ISOLATED */
+/* bus_type: 0=PQ 1=PV 2=SLACK 3=ISOLATED 4=DC (a BUSDC bus that is not isolated) */
 HELIOS_API int          helios_get_bus_info(HeliosHandle h, int index, double* v_pu,
                                             double* angle_rad, int* bus_type, double* vnom_kv);
 HELIOS_API int          helios_get_bus_load(HeliosHandle h, int index, double* p_mw, double* q_mvar);
@@ -296,7 +300,7 @@ HELIOS_API int          helios_get_bus_voltage(HeliosHandle h, const char* bus_n
 HELIOS_API int          helios_get_branch_flow(HeliosHandle h, const char* branch_name,
                                                double* p_mw, double* q_mvar);
 /* Returns a newline-separated machine-readable summary of all buses.
- * Format: "bus <name> V=<v_pu> angle=<angle_rad> type=<PQ|PV|SLACK|ISOLATED> vnom_kv=<kv>"
+ * Format: "bus <name> V=<v_pu> angle=<angle_rad> type=<PQ|PV|SLACK|ISOLATED|DC> vnom_kv=<kv>"
  * For formatted display tables, use the TUI or PlainMenu interfaces. */
 HELIOS_API const char*  helios_get_output_text(HeliosHandle h);
 
