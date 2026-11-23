@@ -78,6 +78,7 @@ class BusType(enum.IntEnum):
     PV = 1
     SLACK = 2
     ISOLATED = 3
+    DC = 4           #: a BUSDC bus that is not isolated
 
 
 @dataclass
@@ -91,6 +92,54 @@ class BusInfo:
     vnom_kv: float
     p_load_mw: float
     q_load_mvar: float
+
+
+class ConverterMode(enum.IntEnum):
+    """How the solve set a converter's active power (:class:`ConverterInfo`)."""
+
+    PQ = 0      #: fixed P and Q
+    PV = 1      #: fixed P, holding its AC voltage
+    VDC = 2     #: holds the voltage of its DC bus
+    DROOP = 3   #: DC voltage droop
+    LIMIT = 4   #: droop at PMIN or PMAX
+    REF = 5     #: reference of its AC island
+
+
+@dataclass
+class ConverterInfo:
+    """Static data and solved state of one AC/DC converter (ACDC record).
+
+    ``pac_mw`` is drawn from the AC bus and ``pdc_mw`` delivered into the DC
+    bus, both positive when rectifying; ``qac_mvar`` is injected into the AC
+    bus. ``vc_pu``, ``pc_mw`` and ``qc_mvar`` belong to the converter node
+    behind the station; without a station they equal ``|V|``, PAC and -QAC
+    at the AC bus. ``q_control`` is -2 holding VAC, 1 fixed Q, 2 at QMAX and
+    3 at QMIN. An out-of-service converter reports zero powers.
+    """
+
+    name: str
+    ac_bus: str
+    dc_bus: str
+    in_service: bool
+    mode: ConverterMode
+    q_control: int
+    rectifying: bool
+    pac_mw: float
+    qac_mvar: float
+    pdc_mw: float
+    vc_pu: float
+    pc_mw: float
+    qc_mvar: float
+
+    @property
+    def station_loss_mw(self):
+        """Active power lost in the station, PAC - Pc."""
+        return self.pac_mw - self.pc_mw
+
+    @property
+    def converter_loss_mw(self):
+        """Active power lost in the converter, Pc - PDC."""
+        return self.pc_mw - self.pdc_mw
 
 
 @dataclass
@@ -241,6 +290,20 @@ _SIGNATURES = {
     "helios_get_contingency_violation": (_I, [_H, _I, _I, _S, _I]),
 }
 
+#: Bound when present; a library older than C API 1.7 lacks them.
+_CONVERTER_API = (1, 7)
+_OPTIONAL_SIGNATURES = {
+    "helios_get_converter_count": (_I, [_H]),
+    "helios_get_converter_name": (_I, [_H, _I, _S, _I]),
+    "helios_find_converter": (_I, [_H, _S]),
+    "helios_get_converter_info": (_I, [_H, _I, _c_int_p, _c_int_p, _c_int_p, _c_double_p,
+                                       _c_double_p, _c_double_p]),
+    "helios_get_converter_state": (_I, [_H, _I, _c_int_p, _c_int_p, _c_int_p, _c_double_p,
+                                        _c_double_p, _c_double_p]),
+    "helios_copy_converter_outputs": (_I, [_H, _c_double_p, _c_double_p, _c_double_p,
+                                           _c_int_p, _I]),
+}
+
 _lib_cache = {}
 
 
@@ -270,6 +333,11 @@ def _load_library(lib_dir=None):
             ) from exc
         fn.restype = restype
         fn.argtypes = argtypes
+    for name, (restype, argtypes) in _OPTIONAL_SIGNATURES.items():
+        fn = getattr(lib, name, None)
+        if fn is not None:
+            fn.restype = restype
+            fn.argtypes = argtypes
 
     major = ctypes.c_int()
     minor = ctypes.c_int()
@@ -449,6 +517,24 @@ class HeliosSession:
     def cut_count(self):
         return self._check(self._lib.helios_get_cut_count(self._h), "get_cut_count")
 
+    @property
+    def has_converter_api(self):
+        """True when the loaded library has the converter getters (C API 1.7)."""
+        return hasattr(self._lib, "helios_get_converter_count")
+
+    def _converter_lib(self):
+        if not self.has_converter_api:
+            raise HeliosError(
+                "the converter getters need the helios C API %d.%d or later; "
+                "the loaded library is %d.%d.%d" % (_CONVERTER_API + self.api_version()))
+        return self._lib
+
+    @property
+    def converter_count(self):
+        """Number of AC/DC converters (needs C API 1.7)."""
+        return self._check(self._converter_lib().helios_get_converter_count(self._h),
+                           "get_converter_count")
+
     def _names(self, count, getter, what):
         buf = ctypes.create_string_buffer(NAME_MAX)
         names = []
@@ -483,6 +569,11 @@ class HeliosSession:
         """Names of all cuts, in element-index order."""
         return self._names(self.cut_count, self._lib.helios_get_cut_name, "get_cut_name")
 
+    def converter_names(self):
+        """Names of all AC/DC converters, in element-index order."""
+        return self._names(self.converter_count, self._lib.helios_get_converter_name,
+                           "get_converter_name")
+
     def find_bus(self, name):
         """Element index of the named bus (raises if unknown)."""
         return self._check(self._lib.helios_find_bus(self._h, name.encode("utf-8")),
@@ -497,6 +588,12 @@ class HeliosSession:
         """Element index of the named generator (raises if unknown)."""
         return self._check(self._lib.helios_find_generator(self._h, name.encode("utf-8")),
                            "find_generator(%s)" % name)
+
+    def find_converter(self, name):
+        """Element index of the named converter (raises if unknown)."""
+        return self._check(
+            self._converter_lib().helios_find_converter(self._h, name.encode("utf-8")),
+            "find_converter(%s)" % name)
 
     # -- per-element queries ------------------------------------------------------
 
@@ -592,6 +689,36 @@ class HeliosSession:
                              q_min_mvar=qmin.value, q_max_mvar=qmax.value,
                              has_p_limits=bool(has_p.value))
 
+    def get_converter_info(self, converter):
+        """Full :class:`ConverterInfo` of the named converter."""
+        idx = self.find_converter(converter)
+        ac = ctypes.c_int()
+        dc = ctypes.c_int()
+        status = ctypes.c_int()
+        pac = ctypes.c_double()
+        qac = ctypes.c_double()
+        pdc = ctypes.c_double()
+        self._check(self._lib.helios_get_converter_info(
+            self._h, idx, ctypes.byref(ac), ctypes.byref(dc), ctypes.byref(status),
+            ctypes.byref(pac), ctypes.byref(qac), ctypes.byref(pdc)),
+            "get_converter_info(%s)" % converter)
+        mode = ctypes.c_int()
+        qctl = ctypes.c_int()
+        direction = ctypes.c_int()
+        vc = ctypes.c_double()
+        pc = ctypes.c_double()
+        qc = ctypes.c_double()
+        self._check(self._lib.helios_get_converter_state(
+            self._h, idx, ctypes.byref(mode), ctypes.byref(qctl), ctypes.byref(direction),
+            ctypes.byref(vc), ctypes.byref(pc), ctypes.byref(qc)),
+            "get_converter_state(%s)" % converter)
+        buses = self.bus_names()
+        return ConverterInfo(name=converter, ac_bus=buses[ac.value], dc_bus=buses[dc.value],
+                             in_service=status.value == 1, mode=ConverterMode(mode.value),
+                             q_control=qctl.value, rectifying=direction.value > 0,
+                             pac_mw=pac.value, qac_mvar=qac.value, pdc_mw=pdc.value,
+                             vc_pu=vc.value, pc_mw=pc.value, qc_mvar=qc.value)
+
     def get_cut_flow(self, cut):
         """Signed total ``(p_mw, q_mvar)`` flow through the named cut."""
         idx = self._check(self._lib.helios_find_cut(self._h, cut.encode("utf-8")),
@@ -645,6 +772,11 @@ class HeliosSession:
         """All SVC outputs as ``(q_mvar, status)`` arrays."""
         return self._copy(self.svc_count, self._lib.helios_copy_svc_outputs,
                           "di", "copy_svc_outputs")
+
+    def get_converter_outputs(self):
+        """All converter outputs as ``(pac_mw, qac_mvar, pdc_mw, status)`` arrays."""
+        return self._copy(self.converter_count, self._lib.helios_copy_converter_outputs,
+                          "dddi", "copy_converter_outputs")
 
     # -- network modification -------------------------------------------------
 
