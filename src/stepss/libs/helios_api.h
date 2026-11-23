@@ -123,6 +123,7 @@ HELIOS_API int          helios_get_generator_count(HeliosHandle h);
 HELIOS_API int          helios_get_svc_count(HeliosHandle h);
 HELIOS_API int          helios_get_zone_count(HeliosHandle h);
 HELIOS_API int          helios_get_cut_count(HeliosHandle h);
+HELIOS_API int          helios_get_converter_count(HeliosHandle h);
 
 /* ---- Names and lookup ----
  * Name getters copy a NUL-terminated string into the caller buffer
@@ -136,6 +137,7 @@ HELIOS_API int          helios_get_generator_name(HeliosHandle h, int index, cha
 HELIOS_API int          helios_get_svc_name(HeliosHandle h, int index, char* buf, int buf_size);
 HELIOS_API int          helios_get_zone_name(HeliosHandle h, int index, char* buf, int buf_size);
 HELIOS_API int          helios_get_cut_name(HeliosHandle h, int index, char* buf, int buf_size);
+HELIOS_API int          helios_get_converter_name(HeliosHandle h, int index, char* buf, int buf_size);
 
 HELIOS_API int          helios_find_bus(HeliosHandle h, const char* name);
 HELIOS_API int          helios_find_branch(HeliosHandle h, const char* name);
@@ -143,6 +145,7 @@ HELIOS_API int          helios_find_generator(HeliosHandle h, const char* name);
 HELIOS_API int          helios_find_svc(HeliosHandle h, const char* name);
 HELIOS_API int          helios_find_zone(HeliosHandle h, const char* name);
 HELIOS_API int          helios_find_cut(HeliosHandle h, const char* name);
+HELIOS_API int          helios_find_converter(HeliosHandle h, const char* name);
 
 /* ---- Indexed getters ----
  * All output pointers may be NULL to skip that field. */
@@ -177,6 +180,34 @@ HELIOS_API int          helios_get_svc_info(HeliosHandle h, int index, int* bus_
                                                int* status, double* q_mvar,
                                                double* v_setpoint_pu, int* control);
 
+/* AC/DC converters (ACDC records). PAC is drawn from the AC bus and PDC
+ * delivered into the DC bus, both positive when rectifying; QAC is injected
+ * into the AC bus. status: 1=in service 0=out; an out-of-service converter
+ * reports zero powers. */
+HELIOS_API int          helios_get_converter_info(HeliosHandle h, int index, int* ac_bus,
+                                               int* dc_bus, int* status, double* pac_mw,
+                                               double* qac_mvar, double* pdc_mw);
+
+/* How the solve set a converter's active power (helios_get_converter_state). */
+typedef enum HeliosConverterMode {
+    HELIOS_CONVERTER_PQ    = 0,  /* fixed P and Q */
+    HELIOS_CONVERTER_PV    = 1,  /* fixed P, holding its AC voltage */
+    HELIOS_CONVERTER_VDC   = 2,  /* holds its DC bus voltage */
+    HELIOS_CONVERTER_DROOP = 3,  /* DC voltage droop */
+    HELIOS_CONVERTER_LIMIT = 4,  /* droop at PMIN or PMAX */
+    HELIOS_CONVERTER_REF   = 5   /* reference of its AC island */
+} HeliosConverterMode;
+
+/* Solved converter state. q_control: -2=holding VAC 1=fixed Q 2=at QMAX
+ * 3=at QMIN; direction: 1=rectifying -1=inverting. vc_pu, pc_mw and qc_mvar
+ * are the converter-node voltage magnitude and the power into the converter
+ * behind the station (equal to |V|, PAC and -QAC at the AC bus without a
+ * station), so PAC - Pc is lost in the station and Pc - PDC in the
+ * converter. An out-of-service converter reports zeros. */
+HELIOS_API int          helios_get_converter_state(HeliosHandle h, int index, int* mode,
+                                               int* q_control, int* direction, double* vc_pu,
+                                               double* pc_mw, double* qc_mvar);
+
 /* Signed total P/Q flow through a cut (sum over member branches). */
 HELIOS_API int          helios_get_cut_flow(HeliosHandle h, int index, double* p_mw, double* q_mvar);
 
@@ -197,6 +228,9 @@ HELIOS_API int          helios_copy_branch_status(HeliosHandle h, int* status, i
 HELIOS_API int          helios_copy_generator_outputs(HeliosHandle h, double* p_mw,
                                                double* q_mvar, int* status, int array_len);
 HELIOS_API int          helios_copy_svc_outputs(HeliosHandle h, double* q_mvar,
+                                               int* status, int array_len);
+HELIOS_API int          helios_copy_converter_outputs(HeliosHandle h, double* pac_mw,
+                                               double* qac_mvar, double* pdc_mw,
                                                int* status, int array_len);
 
 /* ---- Network modification ----
